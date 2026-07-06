@@ -177,4 +177,146 @@ def render_plain(stories: list[dict], today: date) -> str:
 def send_email(stories: list[dict], today: date) -> None:
     msg = MIMEMultipart("alternative")
     msg["Subject"] = f"The Long News — {long_date(today)}"
-    msg["From"] =
+    msg["From"] = os.environ["EMAIL_FROM"]
+    msg["To"] = os.environ["EMAIL_TO"]
+    msg.attach(MIMEText(render_plain(stories, today), "plain"))
+    msg.attach(MIMEText(render_html(stories, today), "html"))
+
+    with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
+        server.login(os.environ["EMAIL_FROM"], os.environ["GMAIL_APP_PASSWORD"])
+        server.send_message(msg)
+
+
+# ————————————————————————————————————————————————
+# The website (published via GitHub Pages from /docs)
+# ————————————————————————————————————————————————
+
+SITE_DIR = "docs"
+
+
+def render_page(stories: list[dict], today: date, record: list[tuple[str, str]]) -> str:
+    sections = []
+    for horizon_id, label, years, color in HORIZONS:
+        matches = [s for s in stories if s.get("horizon") == horizon_id]
+        items = []
+        for s in matches:
+            headline = s.get("headline", "Untitled")
+            url = s.get("url")
+            head_html = (
+                f'<a href="{url}">{headline}</a>' if url else headline
+            )
+            meta = " &middot; ".join(x for x in [s.get("source"), s.get("date")] if x)
+            items.append(
+                f"""<article class="story">
+  <h3>{head_html}</h3>
+  <p class="meta">{meta}</p>
+  <p class="summary">{s.get('summary', '')}</p>
+  <p class="why" style="color:{color}"><strong>The long view —</strong> {s.get('why', '')}</p>
+</article>"""
+            )
+        body = (
+            "".join(items)
+            if items
+            else f'<p class="empty">No {horizon_id}-scale stories today.</p>'
+        )
+        sections.append(
+            f"""<section class="stratum" style="border-left-color:{color}">
+  <p class="h-year" style="color:{color}">Will matter in 0{today.year + years}</p>
+  <h2>{label}</h2>
+  {body}
+</section>"""
+        )
+
+    record_html = ""
+    if record:
+        links = "".join(
+            f'<a href="{fname}">{label}</a>' for fname, label in record
+        )
+        record_html = f'<footer class="record"><h3>The record</h3>{links}</footer>'
+
+    empty_note = (
+        '<p class="empty">Nothing cleared the filter today. That is a finding, not a failure.</p>'
+        if not stories
+        else ""
+    )
+
+    return f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>The Long News — {long_date(today)}</title>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,600;9..144,700&family=Spectral:ital,wght@0,300;0,400;0,600;1,400&display=swap');
+body {{ margin:0; background:#101418; color:#E8E4D8; font-family:'Spectral',Georgia,serif; font-weight:300; }}
+.shell {{ max-width:760px; margin:0 auto; padding:0 20px 80px; }}
+header.masthead {{ padding:56px 0 28px; border-bottom:1px solid #2A3138; }}
+.eyebrow {{ font-size:12px; letter-spacing:.28em; text-transform:uppercase; color:#8A9299; margin:0 0 14px; }}
+h1 {{ font-family:'Fraunces',Georgia,serif; font-weight:700; font-size:clamp(40px,7vw,64px); line-height:.95; margin:0; color:#EFEBDF; }}
+h1 em {{ font-style:italic; font-weight:400; color:#B08D57; }}
+.edition-date {{ font-size:14px; letter-spacing:.12em; color:#8A9299; margin:18px 0 0; }}
+.stratum {{ border-left:3px solid; padding:4px 0 8px 22px; margin:34px 0; }}
+.h-year {{ font-size:13px; letter-spacing:.2em; text-transform:uppercase; margin:0 0 2px; }}
+h2 {{ font-family:'Fraunces',Georgia,serif; font-size:24px; font-weight:600; margin:0; }}
+.story {{ margin:22px 0 0; }}
+.story h3 {{ font-family:'Fraunces',Georgia,serif; font-size:20px; font-weight:600; line-height:1.25; margin:0; }}
+.story h3 a {{ color:#EFEBDF; text-decoration:none; border-bottom:1px solid #3A424A; }}
+.story h3 a:hover {{ border-bottom-color:#D9A441; }}
+.meta {{ font-size:13px; color:#8A9299; margin:5px 0 0; }}
+.summary {{ font-size:16px; line-height:1.55; margin:8px 0 0; color:#CFD4D2; }}
+.why {{ font-size:15px; line-height:1.5; margin:8px 0 0; }}
+.empty {{ color:#5E6870; font-style:italic; font-size:15px; }}
+.record {{ margin-top:60px; border-top:1px solid #2A3138; padding-top:20px; }}
+.record h3 {{ font-size:13px; letter-spacing:.22em; text-transform:uppercase; color:#8A9299; font-weight:400; margin:0 0 10px; }}
+.record a {{ display:block; color:#B9BFC2; text-decoration:none; font-size:15px; padding:4px 0; }}
+.record a:hover {{ color:#D9A441; }}
+.colophon {{ margin-top:40px; font-size:13px; color:#5E6870; }}
+</style>
+</head>
+<body>
+<div class="shell">
+  <header class="masthead">
+    <p class="eyebrow">The Long News &middot; Daily edition</p>
+    <h1>And now, <em>the real news.</em></h1>
+    <p class="edition-date">{long_date(today)}</p>
+  </header>
+  {empty_note}
+  {''.join(sections)}
+  {record_html}
+  <p class="colophon">Selected by machine, to be judged by an editor.
+  In the long run, some news stories are more important than others.</p>
+</div>
+</body>
+</html>"""
+
+
+def build_site(stories: list[dict], today: date) -> None:
+    os.makedirs(SITE_DIR, exist_ok=True)
+    edition_file = f"{today.isoformat()}.html"
+
+    # Gather past editions (dated files already in docs/), newest first.
+    past = sorted(
+        (
+            f
+            for f in os.listdir(SITE_DIR)
+            if f.endswith(".html") and f[0].isdigit() and f != edition_file
+        ),
+        reverse=True,
+    )
+    record = [(edition_file, f"{long_date(today)} — today")] + [
+        (f, long_date(date.fromisoformat(f[:-5]))) for f in past
+    ]
+
+    page = render_page(stories, today, record)
+    with open(os.path.join(SITE_DIR, edition_file), "w") as fh:
+        fh.write(page)
+    with open(os.path.join(SITE_DIR, "index.html"), "w") as fh:
+        fh.write(page)
+
+
+if __name__ == "__main__":
+    today = date.today()
+    stories = run_scan()
+    send_email(stories, today)
+    build_site(stories, today)
+    print(f"Edition of {long_date(today)}: {len(stories)} stories — emailed and published.")
