@@ -34,7 +34,9 @@ Select at most 6 stories. For each, assign the LONGEST horizon it plausibly clea
 - "century": will still shape lives in 100 years
 - "millennium": a historian in 1,000 years might cite it
 
-Be a skeptical editor. Most days produce zero millennium stories. Prefer primary developments (a result, a launch, a treaty, a first) over commentary about them.
+Be a skeptical editor. Most days produce zero millennium stories. Prefer primary developments (a result, a launch, a treaty, a first) over commentary about them. Always link to the specific article, never a section front or homepage that will change within hours.
+
+Distinguish a headline from the force beneath it. A monthly statistic, a single report, or a scoreboard number is short news even when the underlying trend is long news — assign the horizon to the durable shift, not to today's figure, and never stretch to a longer horizon on the strength of an "if."
 
 Respond with ONLY a JSON object, no markdown fences, no preamble:
 {"stories":[{"headline":"...","source":"...","date":"...","url":"...","summary":"one sentence, max 25 words","horizon":"decade|century|millennium","why":"the long view - why it clears this horizon, max 30 words"}]}"""
