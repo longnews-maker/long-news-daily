@@ -1,9 +1,10 @@
 """
-The Long News — daily scan and email.
+The Long News — scan and (occasionally) publish.
 
-Searches today's news via the Anthropic API (with web search enabled),
-keeps only the stories that might matter in a decade, a century, or a
-millennium, emails the edition, and publishes it to the web.
+Surveys the past week's news via the Anthropic API (with web search enabled),
+keeps only the few stories that might matter in a decade, a century, or a
+millennium, and — only when something clears that bar — emails the edition
+and publishes it to the web. Most runs publish nothing, by design.
 
 Required environment variables:
   ANTHROPIC_API_KEY    — from the Claude Console (platform.claude.com)
@@ -27,18 +28,22 @@ import requests
 
 FILTER_PROMPT = """You are the research assistant for The Long News, the Long Now Foundation project edited by Kirk Citron. Its filter, from his 2010 TED talk "And now, the real news": in the long run, some news stories are more important than others. Almost all of today's headlines — politics-of-the-day, markets, sports, celebrity, crime — will not matter in a hundred years. A few will.
 
-Search the web for today's and this week's news (use 2 to 4 searches). Look especially in the categories the Long News has always tracked. Three from science and technology: fundamental discoveries about life, matter, and the universe; machine intelligence, robotics, and space; biology, medicine, longevity, and disease. Three from the human world: the shape of power — geopolitics, demographics, migration, and how states rise and fall; the fate of the planet and its living systems; and belief and ideas — religion, ideology, law, rights, and lasting shifts in how people think and organize.
+Search the web for the most significant news of the past week (use 2 to 4 searches). Look especially in the categories the Long News has always tracked. Three from science and technology: fundamental discoveries about life, matter, and the universe; machine intelligence, robotics, and space; biology, medicine, longevity, and disease. Three from the human world: the shape of power — geopolitics, demographics, migration, and how states rise and fall; the fate of the planet and its living systems; and belief and ideas — religion, ideology, law, rights, and lasting shifts in how people think and organize.
 
 Do not be limited to these categories. The biggest miss is always the story nobody filed under "important" — a development that fits no obvious bucket. Weigh the human world as seriously as the technological: a treaty, a demographic tipping point, or a shift in what a billion people believe can be long news as surely as a discovery.
 
-Select at most 6 stories. For each, assign the LONGEST horizon it plausibly clears:
+Select AT MOST 3 stories — and often the right answer is zero, one, or two. Do not fill slots. A short, ruthless list of things that truly clear the bar is the entire point; a long list is a failure of nerve. For each, assign the LONGEST horizon it plausibly clears:
 - "decade": will still be discussed in 10 years
 - "century": will still shape lives in 100 years
 - "millennium": a historian in 1,000 years might cite it
 
-Be a skeptical editor. Most days produce zero millennium stories. Prefer primary developments (a result, a launch, a treaty, a first) over commentary about them. Always link to the specific article, never a section front or homepage that will change within hours.
+Each horizon must be earned on its own. Most weeks: decade has zero to two stories, century has zero or one, millennium is empty. NEVER promote a story to a longer horizon to make a tier look populated — an empty tier is honest and expected. If nothing clears any bar this week, return an empty list. That is the normal, common outcome, not a failure.
 
-Distinguish a headline from the force beneath it. A monthly statistic, a single report, or a scoreboard number is short news even when the underlying trend is long news — assign the horizon to the durable shift, not to today's figure, and never stretch to a longer horizon on the strength of an "if."
+Be a skeptical editor. Prefer primary developments (a result, a launch, a treaty, a first) over commentary about them. Always link to the specific article, never a section front or homepage that will change within hours. Never select two stories about the same underlying development.
+
+Distinguish a headline from the force beneath it. A monthly statistic, a single report, or a scoreboard number is short news even when the underlying trend is long news — assign the horizon to the durable shift, not to today's figure, and never stretch to a longer horizon on the strength of an "if," a "could," or a "may."
+
+Beware the breaking-news event. A death, a summit, an attack, an appointment, a single test — however much coverage it commands this week — is almost never long news. Heavy coverage is evidence AGAINST selection, not for it: it means the story is loud today, which says nothing about whether it matters in a century. Do not let a week's dominant news cycle capture the edition. Ask what durable shift, if any, lies beneath the event — and select that only if it is already real, not merely forecast. When in doubt, leave it out and wait; if it is genuinely long news, it will still be long news next month.
 
 Respond with ONLY a JSON object, no markdown fences, no preamble:
 {"stories":[{"headline":"...","source":"...","date":"...","url":"...","summary":"one sentence, max 25 words","horizon":"decade|century|millennium","why":"the long view - why it clears this horizon, max 30 words"}]}"""
@@ -47,7 +52,7 @@ Respond with ONLY a JSON object, no markdown fences, no preamble:
 # doesn't republish a story it already ran unless it has genuinely advanced.
 NO_REPEATS_TEMPLATE = """
 
-You have published these stories in the last {days} days. Do NOT select any of them again unless there is a genuinely new, material development since it last ran (a new result, a reversal, a decision) — and if you do run it again, say what changed in the "why" field. Otherwise find different stories.
+You have published these stories in recent editions. Do NOT select any of them again unless there is a genuinely new, material development since it last ran (a new result, a reversal, a decision) — and if you do run it again, say what changed in the "why" field. Otherwise find different stories.
 
 Already published:
 {headlines}"""
@@ -64,11 +69,13 @@ def long_date(d: date) -> str:
     return f"{d.day:02d} {d.strftime('%B')} 0{d.year}"
 
 
-def recent_headlines(days: int = 7) -> str:
-    """Pull headlines from the last `days` editions already saved in docs/.
+def recent_headlines(count: int = 10) -> str:
+    """Pull headlines from the last `count` editions already saved in docs/.
 
     Scrapes the <h3> story titles from the saved HTML. Returns a bullet list,
-    or "" if there are no recent editions yet (e.g. the very first run).
+    or "" if there are no editions yet (e.g. the very first run). Because
+    editions are now occasional, this reads the last N editions whenever they
+    were published, not a fixed time window.
     """
     import glob
     import re
@@ -78,7 +85,7 @@ def recent_headlines(days: int = 7) -> str:
     files = sorted(
         (f for f in glob.glob(os.path.join(SITE_DIR, "*.html")) if os.path.basename(f)[0].isdigit()),
         reverse=True,
-    )[:days]
+    )[:count]
     heads: list[str] = []
     for f in files:
         try:
@@ -101,7 +108,7 @@ def recent_headlines(days: int = 7) -> str:
 def run_scan(recent: str = "") -> list[dict]:
     prompt = FILTER_PROMPT
     if recent:
-        prompt += NO_REPEATS_TEMPLATE.format(days=7, headlines=recent)
+        prompt += NO_REPEATS_TEMPLATE.format(headlines=recent)
     response = requests.post(
         "https://api.anthropic.com/v1/messages",
         headers={
@@ -144,6 +151,8 @@ def render_html(stories: list[dict], today: date) -> str:
     sections = []
     for horizon_id, label, years, color in HORIZONS:
         matches = [s for s in stories if s.get("horizon") == horizon_id]
+        if not matches:
+            continue  # occasional editions show only the strata that hit
         items = []
         for s in matches:
             headline = s.get("headline", "Untitled")
@@ -165,36 +174,24 @@ def render_html(stories: list[dict], today: date) -> str:
                     <strong>The long view —</strong> {s.get('why', '')}</div>
                 </div>"""
             )
-        body = (
-            "".join(items)
-            if items
-            else f'<div style="font-size:14px;color:#9AA1A7;font-style:italic;margin-top:10px;">No {horizon_id}-scale stories today.</div>'
-        )
         sections.append(
             f"""
             <div style="border-left:3px solid {color};padding:4px 0 8px 18px;margin:26px 0;">
               <div style="font-size:11px;letter-spacing:2px;text-transform:uppercase;color:{color};">
                 Will matter in 0{today.year + years}</div>
               <div style="font-size:22px;font-weight:700;font-family:Georgia,serif;">{label}</div>
-              {body}
+              {''.join(items)}
             </div>"""
         )
-
-    empty_note = (
-        '<p style="font-style:italic;color:#7A828A;">Nothing cleared the filter today. That is a finding, not a failure.</p>'
-        if not stories
-        else ""
-    )
 
     return f"""
     <div style="background:#F7F5F0;padding:32px 16px;">
       <div style="max-width:640px;margin:0 auto;font-family:Georgia,'Times New Roman',serif;color:#1C2228;">
         <div style="font-size:11px;letter-spacing:3px;text-transform:uppercase;color:#7A828A;">
-          The Long News &middot; Daily edition</div>
+          The Long News</div>
         <h1 style="font-size:32px;margin:10px 0 4px;font-weight:700;">
           And now, <em style="color:#B08D57;">the real news.</em></h1>
         <div style="font-size:13px;color:#7A828A;letter-spacing:1px;">{long_date(today)}</div>
-        {empty_note}
         {''.join(sections)}
         <div style="border-top:1px solid #D8D4CA;margin-top:32px;padding-top:12px;
                     font-size:12px;color:#9AA1A7;">
@@ -206,8 +203,6 @@ def render_html(stories: list[dict], today: date) -> str:
 
 def render_plain(stories: list[dict], today: date) -> str:
     lines = [f"THE LONG NEWS — {long_date(today)}", ""]
-    if not stories:
-        lines.append("Nothing cleared the filter today.")
     for horizon_id, label, years, _ in HORIZONS:
         matches = [s for s in stories if s.get("horizon") == horizon_id]
         if not matches:
@@ -248,6 +243,8 @@ def render_page(stories: list[dict], today: date, record: list[tuple[str, str]])
     sections = []
     for horizon_id, label, years, color in HORIZONS:
         matches = [s for s in stories if s.get("horizon") == horizon_id]
+        if not matches:
+            continue  # occasional editions show only the strata that hit
         items = []
         for s in matches:
             headline = s.get("headline", "Untitled")
@@ -264,16 +261,11 @@ def render_page(stories: list[dict], today: date, record: list[tuple[str, str]])
   <p class="why" style="color:{color}"><strong>The long view —</strong> {s.get('why', '')}</p>
 </article>"""
             )
-        body = (
-            "".join(items)
-            if items
-            else f'<p class="empty">No {horizon_id}-scale stories today.</p>'
-        )
         sections.append(
             f"""<section class="stratum" style="border-left-color:{color}">
   <p class="h-year" style="color:{color}">Will matter in 0{today.year + years}</p>
   <h2>{label}</h2>
-  {body}
+  {''.join(items)}
 </section>"""
         )
 
@@ -284,11 +276,7 @@ def render_page(stories: list[dict], today: date, record: list[tuple[str, str]])
         )
         record_html = f'<footer class="record"><h3>The record</h3>{links}</footer>'
 
-    empty_note = (
-        '<p class="empty">Nothing cleared the filter today. That is a finding, not a failure.</p>'
-        if not stories
-        else ""
-    )
+    empty_note = ""
 
     return f"""<!DOCTYPE html>
 <html lang="en">
@@ -326,7 +314,7 @@ h2 {{ font-family:'Fraunces',Georgia,serif; font-size:24px; font-weight:600; mar
 <body>
 <div class="shell">
   <header class="masthead">
-    <p class="eyebrow">The Long News &middot; Daily edition</p>
+    <p class="eyebrow">The Long News</p>
     <h1>And now, <em>the real news.</em></h1>
     <p class="edition-date">{long_date(today)}</p>
   </header>
@@ -366,7 +354,12 @@ def build_site(stories: list[dict], today: date) -> None:
 
 if __name__ == "__main__":
     today = date.today()
-    stories = run_scan(recent=recent_headlines(days=7))
+    stories = run_scan(recent=recent_headlines())
+    if not stories:
+        # No long news this week. Publish nothing — no email, no new edition,
+        # nothing to commit. The pulse is occasional by design.
+        print(f"{long_date(today)}: nothing cleared the bar. No edition published.")
+        raise SystemExit(0)
     send_email(stories, today)
     build_site(stories, today)
     print(f"Edition of {long_date(today)}: {len(stories)} stories — emailed and published.")
