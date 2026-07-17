@@ -4,7 +4,8 @@ The Long News — scan and (occasionally) publish.
 Surveys the past week's news via the Anthropic API (with web search enabled),
 keeps only the few stories that might matter in a decade, a century, or a
 millennium, and — only when something clears that bar — emails the edition
-and publishes it to the web. Most runs publish nothing, by design.
+and publishes it to the web. Most runs publish nothing, by design; on those
+weeks it emails the editor the near-misses so the silence can be audited.
 
 Required environment variables:
   ANTHROPIC_API_KEY    — from the Claude Console (platform.claude.com)
@@ -49,8 +50,10 @@ Distinguish a headline from the force beneath it. A monthly statistic, a single 
 
 Beware the breaking-news event. A death, a summit, an attack, an appointment, a single test, a crisis — however much coverage it commands this week — is almost never long news. Heavy coverage is evidence AGAINST selection, not for it: it means the story is loud today, which says nothing about whether it matters in a century. Do not let a week's dominant news cycle capture the edition. And beware the disguised event: a breaking story that asserts its own long-term significance ("first ever," "rewires everything," "for a generation") is still a breaking story. An asserted durable shift is not an actual one. If the significance depends on the event "holding" or being confirmed later, it has not happened yet — leave it out and wait. If it is genuinely long news, it will still be long news next month, confirmed.
 
+Separately, ALWAYS return "rejects": the five or six strongest stories you seriously considered this week but did NOT select — the near-misses. For each, give a one-line reason it failed the test (short news, an unconfirmed claim, a breaking event, a hedge on "if"). This list matters most in a week where you select nothing: it is how the editor audits your silence. Populate it on every run, especially when "stories" is empty. Order rejects strongest first.
+
 Respond with ONLY a JSON object, no markdown fences, no preamble:
-{"stories":[{"headline":"...","source":"...","date":"...","url":"...","summary":"one sentence, max 25 words","horizon":"decade|century|millennium","why":"the long view - why it clears this horizon, max 30 words"}]}"""
+{"stories":[{"headline":"...","source":"...","date":"...","url":"...","summary":"one sentence, max 25 words","horizon":"decade|century|millennium","why":"the long view - why it clears this horizon, max 30 words"}],"rejects":[{"headline":"...","source":"...","url":"...","reason":"why it did not clear the ten-year bar, max 25 words"}]}"""
 
 # Appended to the prompt only when recent editions exist, so the machine
 # doesn't republish a story it already ran unless it has genuinely advanced.
@@ -109,7 +112,7 @@ def recent_headlines(count: int = 10) -> str:
     return "\n".join(f"- {h}" for h in unique)
 
 
-def run_scan(recent: str = "") -> list[dict]:
+def run_scan(recent: str = "") -> tuple[list[dict], list[dict]]:
     prompt = FILTER_PROMPT
     if recent:
         prompt += NO_REPEATS_TEMPLATE.format(headlines=recent)
@@ -148,7 +151,8 @@ def run_scan(recent: str = "") -> list[dict]:
     start, end = clean.find("{"), clean.rfind("}")
     if start == -1 or end == -1:
         raise ValueError("The scan returned no readable result.")
-    return json.loads(clean[start : end + 1]).get("stories", [])
+    parsed = json.loads(clean[start : end + 1])
+    return parsed.get("stories", []), parsed.get("rejects", [])
 
 
 def render_html(stories: list[dict], today: date) -> str:
@@ -230,6 +234,80 @@ def send_email(stories: list[dict], today: date) -> None:
     msg["To"] = os.environ["EMAIL_TO"]
     msg.attach(MIMEText(render_plain(stories, today), "plain"))
     msg.attach(MIMEText(render_html(stories, today), "html"))
+
+    with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
+        server.login(os.environ["EMAIL_FROM"], os.environ["GMAIL_APP_PASSWORD"])
+        server.send_message(msg)
+
+
+def render_rejects_plain(rejects: list[dict], today: date) -> str:
+    lines = [
+        f"THE LONG NEWS — REJECTS — {long_date(today)}",
+        "",
+        "Nothing cleared the bar this week. These are the strongest stories the",
+        "scan considered and set aside — the near-misses, so you can audit the",
+        "silence. If one of these should have run, that is the signal to loosen",
+        "the filter.",
+        "",
+    ]
+    for r in rejects:
+        lines += [
+            f"* {r.get('headline', '')} ({r.get('source', '')})",
+            f"  Why not: {r.get('reason', '')}",
+            f"  {r.get('url', '')}",
+            "",
+        ]
+    return "\n".join(lines)
+
+
+def render_rejects_html(rejects: list[dict], today: date) -> str:
+    items = []
+    for r in rejects:
+        headline = r.get("headline", "Untitled")
+        url = r.get("url")
+        head_html = (
+            f'<a href="{url}" style="color:#1C2228;text-decoration:none;'
+            f'border-bottom:1px solid #B0A99A;">{headline}</a>'
+            if url
+            else headline
+        )
+        items.append(
+            f"""
+            <div style="margin:16px 0 0;">
+              <div style="font-size:17px;font-weight:600;line-height:1.3;color:#3A3A38;">{head_html}</div>
+              <div style="font-size:12px;color:#8A867C;margin-top:3px;">{r.get('source', '')}</div>
+              <div style="font-size:14px;line-height:1.5;margin-top:5px;color:#6A665C;">
+                <em>Why not —</em> {r.get('reason', '')}</div>
+            </div>"""
+        )
+    return f"""
+    <div style="background:#F2EFE8;padding:32px 16px;">
+      <div style="max-width:640px;margin:0 auto;font-family:Georgia,'Times New Roman',serif;color:#3A3A38;">
+        <div style="font-size:11px;letter-spacing:3px;text-transform:uppercase;color:#8A867C;">
+          The Long News &middot; Rejects</div>
+        <h1 style="font-size:26px;margin:10px 0 4px;font-weight:700;color:#2A2A28;">
+          Nothing cleared the bar this week.</h1>
+        <div style="font-size:13px;color:#8A867C;letter-spacing:1px;">{long_date(today)}</div>
+        <p style="font-size:15px;line-height:1.55;color:#6A665C;margin:16px 0 0;">
+          These are the strongest stories the scan considered and set aside —
+          the near-misses. If one of them should have run, that is your signal
+          the filter is too tight.</p>
+        {''.join(items)}
+        <div style="border-top:1px solid #D5D0C5;margin-top:28px;padding-top:12px;
+                    font-size:12px;color:#A5A093;">
+          Sent to the editor only. Not published.</div>
+      </div>
+    </div>"""
+
+
+def send_rejects(rejects: list[dict], today: date) -> None:
+    """Email the near-miss list to the editor only. No site build, no publish."""
+    msg = MIMEMultipart("alternative")
+    msg["Subject"] = "This week's Long News rejects"
+    msg["From"] = os.environ["EMAIL_FROM"]
+    msg["To"] = os.environ["EMAIL_TO"]
+    msg.attach(MIMEText(render_rejects_plain(rejects, today), "plain"))
+    msg.attach(MIMEText(render_rejects_html(rejects, today), "html"))
 
     with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
         server.login(os.environ["EMAIL_FROM"], os.environ["GMAIL_APP_PASSWORD"])
@@ -358,11 +436,15 @@ def build_site(stories: list[dict], today: date) -> None:
 
 if __name__ == "__main__":
     today = date.today()
-    stories = run_scan(recent=recent_headlines())
+    stories, rejects = run_scan(recent=recent_headlines())
     if not stories:
-        # No long news this week. Publish nothing — no email, no new edition,
-        # nothing to commit. The pulse is occasional by design.
-        print(f"{long_date(today)}: nothing cleared the bar. No edition published.")
+        # No long news this week. Don't publish — but email the editor the
+        # near-misses so the silence can be audited.
+        if rejects:
+            send_rejects(rejects, today)
+            print(f"{long_date(today)}: nothing cleared the bar. Rejects emailed ({len(rejects)}).")
+        else:
+            print(f"{long_date(today)}: nothing cleared the bar and no rejects returned.")
         raise SystemExit(0)
     send_email(stories, today)
     build_site(stories, today)
