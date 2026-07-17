@@ -4,9 +4,7 @@ The Long News — scan and (occasionally) publish.
 Surveys the past week's news via the Anthropic API (with web search enabled),
 keeps only the few stories that might matter in a decade, a century, or a
 millennium, and — only when something clears that bar — emails the edition
-and publishes it to the web. Most runs publish nothing, by design. Every run
-also emails the editor the near-misses (the "rejects") so the machine's
-judgment can be audited; this is a tuning aid, meant to be removed later.
+and publishes it to the web. Most runs publish nothing, by design.
 
 Required environment variables:
   ANTHROPIC_API_KEY    — from the Claude Console (platform.claude.com)
@@ -80,10 +78,9 @@ def long_date(d: date) -> str:
 def recent_headlines(count: int = 10) -> str:
     """Pull headlines from the last `count` editions already saved in docs/.
 
-    Scrapes the <h3> story titles from the saved HTML. Returns a bullet list,
-    or "" if there are no editions yet (e.g. the very first run). Because
-    editions are now occasional, this reads the last N editions whenever they
-    were published, not a fixed time window.
+    Reads the stored JSON alongside each edition (if present) or falls back to
+    scraping <h3> text from the saved HTML. Returns a bullet list, or "" if
+    there are no recent editions yet (e.g. the very first run).
     """
     import glob
     import re
@@ -202,4 +199,263 @@ def render_html(stories: list[dict], today: date) -> str:
           And now, <em style="color:#B08D57;">the real news.</em></h1>
         <div style="font-size:13px;color:#7A828A;letter-spacing:1px;">{long_date(today)}</div>
         {''.join(sections)}
-        <div style="border-top:1px solid
+        <div style="border-top:1px solid #D8D4CA;margin-top:32px;padding-top:12px;
+                    font-size:12px;color:#9AA1A7;">
+          Selected by machine, to be judged by an editor. In the long run,
+          some news stories are more important than others.</div>
+      </div>
+    </div>"""
+
+
+def render_plain(stories: list[dict], today: date) -> str:
+    lines = [f"THE LONG NEWS — {long_date(today)}", ""]
+    for horizon_id, label, years, _ in HORIZONS:
+        matches = [s for s in stories if s.get("horizon") == horizon_id]
+        if not matches:
+            continue
+        lines += [f"{label.upper()} — will matter in 0{today.year + years}", ""]
+        for s in matches:
+            lines += [
+                f"* {s.get('headline', '')} ({s.get('source', '')})",
+                f"  {s.get('summary', '')}",
+                f"  The long view: {s.get('why', '')}",
+                f"  {s.get('url', '')}",
+                "",
+            ]
+    return "\n".join(lines)
+
+
+def send_email(stories: list[dict], today: date) -> None:
+    msg = MIMEMultipart("alternative")
+    msg["Subject"] = f"The Long News — {long_date(today)}"
+    msg["From"] = os.environ["EMAIL_FROM"]
+    msg["To"] = os.environ["EMAIL_TO"]
+    msg.attach(MIMEText(render_plain(stories, today), "plain"))
+    msg.attach(MIMEText(render_html(stories, today), "html"))
+
+    with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
+        server.login(os.environ["EMAIL_FROM"], os.environ["GMAIL_APP_PASSWORD"])
+        server.send_message(msg)
+
+
+def render_rejects_plain(rejects: list[dict], today: date, published: bool = False) -> str:
+    intro = (
+        "An edition published this week. These are the strongest stories the"
+        if published
+        else "Nothing cleared the bar this week. These are the strongest stories the"
+    )
+    lines = [
+        f"THE LONG NEWS — REJECTS — {long_date(today)}",
+        "",
+        intro,
+        "scan considered and set aside — the near-misses, so you can audit its",
+        "judgment. If one of these should have run, that is the signal to loosen",
+        "the filter.",
+        "",
+    ]
+    for r in rejects:
+        lines += [
+            f"* {r.get('headline', '')} ({r.get('source', '')})",
+            f"  Why not: {r.get('reason', '')}",
+            f"  {r.get('url', '')}",
+            "",
+        ]
+    return "\n".join(lines)
+
+
+def render_rejects_html(rejects: list[dict], today: date, published: bool = False) -> str:
+    items = []
+    for r in rejects:
+        headline = r.get("headline", "Untitled")
+        url = r.get("url")
+        head_html = (
+            f'<a href="{url}" style="color:#1C2228;text-decoration:none;'
+            f'border-bottom:1px solid #B0A99A;">{headline}</a>'
+            if url
+            else headline
+        )
+        items.append(
+            f"""
+            <div style="margin:16px 0 0;">
+              <div style="font-size:17px;font-weight:600;line-height:1.3;color:#3A3A38;">{head_html}</div>
+              <div style="font-size:12px;color:#8A867C;margin-top:3px;">{r.get('source', '')}</div>
+              <div style="font-size:14px;line-height:1.5;margin-top:5px;color:#6A665C;">
+                <em>Why not —</em> {r.get('reason', '')}</div>
+            </div>"""
+        )
+    heading = "Also considered this week." if published else "Nothing cleared the bar this week."
+    return f"""
+    <div style="background:#F2EFE8;padding:32px 16px;">
+      <div style="max-width:640px;margin:0 auto;font-family:Georgia,'Times New Roman',serif;color:#3A3A38;">
+        <div style="font-size:11px;letter-spacing:3px;text-transform:uppercase;color:#8A867C;">
+          The Long News &middot; Rejects</div>
+        <h1 style="font-size:26px;margin:10px 0 4px;font-weight:700;color:#2A2A28;">
+          {heading}</h1>
+        <div style="font-size:13px;color:#8A867C;letter-spacing:1px;">{long_date(today)}</div>
+        <p style="font-size:15px;line-height:1.55;color:#6A665C;margin:16px 0 0;">
+          These are the strongest stories the scan considered and set aside —
+          the near-misses. If one of them should have run, that is your signal
+          the filter is too tight.</p>
+        {''.join(items)}
+        <div style="border-top:1px solid #D5D0C5;margin-top:28px;padding-top:12px;
+                    font-size:12px;color:#A5A093;">
+          Sent to the editor only. Not published.</div>
+      </div>
+    </div>"""
+
+
+def send_rejects(rejects: list[dict], today: date, published: bool = False) -> None:
+    """Email the near-miss list to the editor only. No site build, no publish."""
+    msg = MIMEMultipart("alternative")
+    msg["Subject"] = "This week's Long News rejects"
+    msg["From"] = os.environ["EMAIL_FROM"]
+    msg["To"] = os.environ["EMAIL_TO"]
+    msg.attach(MIMEText(render_rejects_plain(rejects, today, published), "plain"))
+    msg.attach(MIMEText(render_rejects_html(rejects, today, published), "html"))
+
+    with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
+        server.login(os.environ["EMAIL_FROM"], os.environ["GMAIL_APP_PASSWORD"])
+        server.send_message(msg)
+
+
+# ————————————————————————————————————————————————
+# The website (published via GitHub Pages from /docs)
+# ————————————————————————————————————————————————
+
+SITE_DIR = "docs"
+
+
+def render_page(stories: list[dict], today: date, record: list[tuple[str, str]]) -> str:
+    sections = []
+    for horizon_id, label, years, color in HORIZONS:
+        matches = [s for s in stories if s.get("horizon") == horizon_id]
+        if not matches:
+            continue  # occasional editions show only the strata that hit
+        items = []
+        for s in matches:
+            headline = s.get("headline", "Untitled")
+            url = s.get("url")
+            head_html = (
+                f'<a href="{url}">{headline}</a>' if url else headline
+            )
+            meta = " &middot; ".join(x for x in [s.get("source"), s.get("date")] if x)
+            items.append(
+                f"""<article class="story">
+  <h3>{head_html}</h3>
+  <p class="meta">{meta}</p>
+  <p class="summary">{s.get('summary', '')}</p>
+  <p class="why" style="color:{color}"><strong>The long view —</strong> {s.get('why', '')}</p>
+</article>"""
+            )
+        sections.append(
+            f"""<section class="stratum" style="border-left-color:{color}">
+  <p class="h-year" style="color:{color}">Will matter in 0{today.year + years}</p>
+  <h2>{label}</h2>
+  {''.join(items)}
+</section>"""
+        )
+
+    record_html = ""
+    if record:
+        links = "".join(
+            f'<a href="{fname}">{label}</a>' for fname, label in record
+        )
+        record_html = f'<footer class="record"><h3>The record</h3>{links}</footer>'
+
+    empty_note = ""
+
+    return f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>The Long News — {long_date(today)}</title>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,600;9..144,700&family=Spectral:ital,wght@0,300;0,400;0,600;1,400&display=swap');
+body {{ margin:0; background:#101418; color:#E8E4D8; font-family:'Spectral',Georgia,serif; font-weight:300; }}
+.shell {{ max-width:760px; margin:0 auto; padding:0 20px 80px; }}
+header.masthead {{ padding:56px 0 28px; border-bottom:1px solid #2A3138; }}
+.eyebrow {{ font-size:12px; letter-spacing:.28em; text-transform:uppercase; color:#8A9299; margin:0 0 14px; }}
+h1 {{ font-family:'Fraunces',Georgia,serif; font-weight:700; font-size:clamp(40px,7vw,64px); line-height:.95; margin:0; color:#EFEBDF; }}
+h1 em {{ font-style:italic; font-weight:400; color:#B08D57; }}
+.edition-date {{ font-size:14px; letter-spacing:.12em; color:#8A9299; margin:18px 0 0; }}
+.stratum {{ border-left:3px solid; padding:4px 0 8px 22px; margin:34px 0; }}
+.h-year {{ font-size:13px; letter-spacing:.2em; text-transform:uppercase; margin:0 0 2px; }}
+h2 {{ font-family:'Fraunces',Georgia,serif; font-size:24px; font-weight:600; margin:0; }}
+.story {{ margin:22px 0 0; }}
+.story h3 {{ font-family:'Fraunces',Georgia,serif; font-size:20px; font-weight:600; line-height:1.25; margin:0; }}
+.story h3 a {{ color:#EFEBDF; text-decoration:none; border-bottom:1px solid #3A424A; }}
+.story h3 a:hover {{ border-bottom-color:#D9A441; }}
+.meta {{ font-size:13px; color:#8A9299; margin:5px 0 0; }}
+.summary {{ font-size:16px; line-height:1.55; margin:8px 0 0; color:#CFD4D2; }}
+.why {{ font-size:15px; line-height:1.5; margin:8px 0 0; }}
+.empty {{ color:#5E6870; font-style:italic; font-size:15px; }}
+.record {{ margin-top:60px; border-top:1px solid #2A3138; padding-top:20px; }}
+.record h3 {{ font-size:13px; letter-spacing:.22em; text-transform:uppercase; color:#8A9299; font-weight:400; margin:0 0 10px; }}
+.record a {{ display:block; color:#B9BFC2; text-decoration:none; font-size:15px; padding:4px 0; }}
+.record a:hover {{ color:#D9A441; }}
+.colophon {{ margin-top:40px; font-size:13px; color:#5E6870; }}
+</style>
+</head>
+<body>
+<div class="shell">
+  <header class="masthead">
+    <p class="eyebrow">The Long News</p>
+    <h1>And now, <em>the real news.</em></h1>
+    <p class="edition-date">{long_date(today)}</p>
+  </header>
+  {empty_note}
+  {''.join(sections)}
+  {record_html}
+  <p class="colophon">Selected by machine, to be judged by an editor.
+  In the long run, some news stories are more important than others.</p>
+</div>
+</body>
+</html>"""
+
+
+def build_site(stories: list[dict], today: date) -> None:
+    os.makedirs(SITE_DIR, exist_ok=True)
+    edition_file = f"{today.isoformat()}.html"
+
+    # Gather past editions (dated files already in docs/), newest first.
+    past = sorted(
+        (
+            f
+            for f in os.listdir(SITE_DIR)
+            if f.endswith(".html") and f[0].isdigit() and f != edition_file
+        ),
+        reverse=True,
+    )
+    record = [(edition_file, f"{long_date(today)} — today")] + [
+        (f, long_date(date.fromisoformat(f[:-5]))) for f in past
+    ]
+
+    page = render_page(stories, today, record)
+    with open(os.path.join(SITE_DIR, edition_file), "w") as fh:
+        fh.write(page)
+    with open(os.path.join(SITE_DIR, "index.html"), "w") as fh:
+        fh.write(page)
+
+
+if __name__ == "__main__":
+    today = date.today()
+    stories, rejects = run_scan(recent=recent_headlines())
+
+    # The rejects email is a tuning instrument: it always goes to the editor
+    # (only), publishing week or not, so the machine's judgment can be audited
+    # against what the editor would have chosen. Remove this once the selector
+    # is trusted.
+    if rejects:
+        send_rejects(rejects, today, published=bool(stories))
+
+    if not stories:
+        print(f"{long_date(today)}: nothing cleared the bar. Rejects emailed ({len(rejects)}).")
+        raise SystemExit(0)
+
+    send_email(stories, today)
+    build_site(stories, today)
+    print(
+        f"Edition of {long_date(today)}: {len(stories)} stories — emailed and published. "
+        f"Rejects emailed ({len(rejects)})."
+    )
