@@ -3,7 +3,7 @@ name: The Long News daily scan
 on:
   schedule:
     # 11:00 UTC = 7:00 AM New York in summer, 6:00 AM in winter.
-    - cron: "0 11 * * *"
+    - cron: "0 11 * * 1"
   workflow_dispatch: # lets you run it manually from the Actions tab
 
 permissions:
